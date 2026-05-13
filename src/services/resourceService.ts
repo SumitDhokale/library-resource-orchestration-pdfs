@@ -5,6 +5,81 @@ import type { DigitalResource } from '../types';
  * Digital Resource Service - Handle all digital resource database operations
  */
 
+// Storage bucket name for digital resources
+const STORAGE_BUCKET = 'digital-resources';
+
+// Upload file to Supabase Storage
+export async function uploadFile(file: File, fileName?: string): Promise<{ data: { path: string; url: string } | null; error: string | null }> {
+  try {
+    const fileExt = file.name.split('.').pop();
+    const fileNameFinal = fileName || `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
+
+    const { data, error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(fileNameFinal, file, {
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (error) {
+      console.error('Error uploading file:', error);
+      return { data: null, error: error.message };
+    }
+
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from(STORAGE_BUCKET)
+      .getPublicUrl(data.path);
+
+    return { data: { path: data.path, url: publicUrl }, error: null };
+  } catch (error) {
+    console.error('Exception uploading file:', error);
+    return { data: null, error: 'Failed to upload file' };
+  }
+}
+
+// Delete file from Supabase Storage
+export async function deleteFile(filePath: string): Promise<{ success: boolean; error: string | null }> {
+  try {
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .remove([filePath]);
+
+    if (error) {
+      console.error('Error deleting file:', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true, error: null };
+  } catch (error) {
+    console.error('Exception deleting file:', error);
+    return { success: false, error: 'Failed to delete file' };
+  }
+}
+
+// Get file size from Supabase Storage
+export async function getFileSize(filePath: string): Promise<{ size: number | null; error: string | null }> {
+  try {
+    const { data, error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .list('', {
+        limit: 1000,
+        search: filePath.split('/').pop()
+      });
+
+    if (error) {
+      console.error('Error getting file info:', error);
+      return { size: null, error: error.message };
+    }
+
+    const file = data?.find(f => f.name === filePath.split('/').pop());
+    return { size: file?.metadata?.size || null, error: null };
+  } catch (error) {
+    console.error('Exception getting file size:', error);
+    return { size: null, error: 'Failed to get file size' };
+  }
+}
+
 // Fetch all digital resources
 export async function fetchDigitalResources(): Promise<{ data: DigitalResource[] | null; error: string | null }> {
   try {
@@ -72,19 +147,42 @@ export async function fetchResourcesByCategory(category: string): Promise<{ data
   }
 }
 
-// Create new digital resource
+// Create new digital resource with file upload
 export async function createDigitalResource(
-  resource: Omit<DigitalResource, 'id' | 'createdAt' | 'downloads'>
+  resource: Omit<DigitalResource, 'id' | 'createdAt' | 'downloads'>,
+  file?: File
 ): Promise<{ data: DigitalResource | null; error: string | null }> {
   try {
+    let fileUrl = resource.fileUrl;
+    let fileSize = resource.fileSize;
+    let filePath = '';
+
+    // If a file is provided, upload it to storage
+    if (file) {
+      const uploadResult = await uploadFile(file);
+      if (uploadResult.error) {
+        return { data: null, error: uploadResult.error };
+      }
+
+      fileUrl = uploadResult.data!.url;
+      filePath = uploadResult.data!.path;
+
+      // Get file size
+      const sizeResult = await getFileSize(filePath);
+      if (sizeResult.size) {
+        const sizeInMB = (sizeResult.size / (1024 * 1024)).toFixed(2);
+        fileSize = `${sizeInMB} MB`;
+      }
+    }
+
     const { data, error } = await supabase
       .from('digital_resources')
       .insert({
         title: resource.title,
         description: resource.description,
-        file_url: resource.fileUrl,
+        file_url: fileUrl,
         file_type: resource.fileType,
-        file_size: resource.fileSize,
+        file_size: fileSize,
         category: resource.category,
         uploaded_by: resource.uploadedBy,
         downloads: 0,
@@ -94,6 +192,10 @@ export async function createDigitalResource(
 
     if (error) {
       console.error('Error creating digital resource:', error);
+      // If database insert failed and we uploaded a file, clean up
+      if (file && filePath) {
+        await deleteFile(filePath);
+      }
       return { data: null, error: error.message };
     }
 
@@ -166,11 +268,28 @@ export async function updateDigitalResource(
 // Delete digital resource
 export async function deleteDigitalResource(id: string): Promise<{ success: boolean; error: string | null }> {
   try {
+    // First get the resource to get the file URL
+    const { data: resource } = await supabase
+      .from('digital_resources')
+      .select('file_url')
+      .eq('id', id)
+      .single();
+
+    // Delete from database
     const { error } = await supabase.from('digital_resources').delete().eq('id', id);
 
     if (error) {
       console.error('Error deleting digital resource:', error);
       return { success: false, error: error.message };
+    }
+
+    // If there was a file URL and it's from our storage, delete the file too
+    if (resource?.file_url && resource.file_url.includes('supabase')) {
+      // Extract file path from URL
+      const urlParts = resource.file_url.split('/');
+      const fileName = urlParts[urlParts.length - 1];
+      // Try to delete the file (ignore errors if file doesn't exist)
+      await deleteFile(fileName);
     }
 
     return { success: true, error: null };

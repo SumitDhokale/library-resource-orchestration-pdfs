@@ -34,6 +34,7 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
     fileSize: '',
     category: '',
   });
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   // Load digital resources from database
   useEffect(() => {
@@ -80,9 +81,11 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
         fileSize: resource.fileSize,
         category: resource.category,
       });
+      setSelectedFile(null);
     } else {
       setEditingResource(null);
       setFormData({ title: '', description: '', fileUrl: '', fileType: 'PDF', fileSize: '', category: '' });
+      setSelectedFile(null);
     }
     setIsModalOpen(true);
   };
@@ -94,7 +97,7 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
 
     try {
       if (editingResource) {
-        // Update existing resource
+        // Update existing resource (only metadata, not file)
         const result = await updateResourceService(editingResource.id, formData);
         if (result.error) {
           setMessage({ type: 'error', text: result.error });
@@ -103,22 +106,45 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
           setMessage({ type: 'success', text: 'Resource updated successfully!' });
         }
       } else {
-        // Create new resource
+        // Create new resource with file upload
+        if (!selectedFile) {
+          setMessage({ type: 'error', text: 'Please select a file to upload' });
+          setIsSaving(false);
+          return;
+        }
+
+        // Validate file type
+        const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+        if (!allowedTypes.includes(selectedFile.type)) {
+          setMessage({ type: 'error', text: 'Invalid file type. Please upload PDF, Word, PowerPoint, or Excel files.' });
+          setIsSaving(false);
+          return;
+        }
+
+        // Validate file size (max 50MB)
+        if (selectedFile.size > 50 * 1024 * 1024) {
+          setMessage({ type: 'error', text: 'File size too large. Maximum size is 50MB.' });
+          setIsSaving(false);
+          return;
+        }
+
         const result = await createDigitalResource({
           ...formData,
           uploadedBy: currentUser?.id || '',
-        });
+        }, selectedFile);
+
         if (result.error) {
           setMessage({ type: 'error', text: result.error });
         } else {
           addDigitalResource(result.data!);
-          setMessage({ type: 'success', text: 'Resource created successfully!' });
+          setMessage({ type: 'success', text: 'Resource uploaded successfully!' });
         }
       }
 
       if (!message?.type || message.type === 'success') {
         setIsModalOpen(false);
         setEditingResource(null);
+        setSelectedFile(null);
       }
     } catch (error) {
       setMessage({ type: 'error', text: 'An unexpected error occurred' });
@@ -145,10 +171,26 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
     }
   };
 
-  const handleDownload = (resource: DigitalResource) => {
-    incrementDownload(resource.id);
-    // Simulate download
-    alert(`Downloading: ${resource.title}`);
+  const handleDownload = async (resource: DigitalResource) => {
+    try {
+      // Increment download count
+      await incrementDownload(resource.id);
+
+      // Create a temporary link to download the file
+      const link = document.createElement('a');
+      link.href = resource.fileUrl;
+      link.download = `${resource.title}.${resource.fileType.toLowerCase()}`;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Update local state
+      incrementDownload(resource.id);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      setMessage({ type: 'error', text: 'Failed to download file' });
+    }
   };
 
   const fileTypeColors: Record<string, string> = {
@@ -314,16 +356,31 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
         isOpen={!!viewingResource}
         onClose={() => setViewingResource(null)}
         title={viewingResource?.title || 'Resource Preview'}
-        size="lg"
+        size="xl"
       >
         {viewingResource && (
           <div className="space-y-4">
-            <div className={cn(
-              'h-48 rounded-xl flex items-center justify-center bg-gradient-to-br',
-              fileTypeColors[viewingResource.fileType] || 'from-gray-500 to-gray-600'
-            )}>
-              <FileText size={64} className="text-white/80" />
-            </div>
+            {/* PDF Preview */}
+            {viewingResource.fileType === 'PDF' && (
+              <div className="h-96 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+                <iframe
+                  src={viewingResource.fileUrl}
+                  className="w-full h-full"
+                  title={`Preview of ${viewingResource.title}`}
+                />
+              </div>
+            )}
+
+            {/* Other file types - show icon */}
+            {viewingResource.fileType !== 'PDF' && (
+              <div className={cn(
+                'h-48 rounded-xl flex items-center justify-center bg-gradient-to-br',
+                fileTypeColors[viewingResource.fileType] || 'from-gray-500 to-gray-600'
+              )}>
+                <FileText size={64} className="text-white/80" />
+              </div>
+            )}
+
             <div>
               <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
                 {viewingResource.title}
@@ -397,22 +454,59 @@ export function DigitalResourcesPage({ canManage = false }: DigitalResourcesPage
               ]}
             />
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="File URL"
-              value={formData.fileUrl}
-              onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
-              placeholder="Enter file URL or path"
-              required
-            />
-            <Input
-              label="File Size"
-              value={formData.fileSize}
-              onChange={(e) => setFormData({ ...formData, fileSize: e.target.value })}
-              placeholder="e.g., 2.5 MB"
-              required
-            />
-          </div>
+
+          {!editingResource && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                File Upload
+              </label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    setSelectedFile(file);
+                    // Auto-detect file type
+                    let fileType = 'PDF';
+                    if (file.type.includes('pdf')) fileType = 'PDF';
+                    else if (file.type.includes('word') || file.name.endsWith('.docx')) fileType = 'DOC';
+                    else if (file.type.includes('presentation') || file.name.endsWith('.pptx')) fileType = 'PPT';
+                    else if (file.type.includes('sheet') || file.name.endsWith('.xlsx')) fileType = 'XLS';
+
+                    setFormData({ ...formData, fileType });
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                required={!editingResource}
+              />
+              {selectedFile && (
+                <p className="text-sm text-gray-500 mt-1">
+                  Selected: {selectedFile.name} ({(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)
+                </p>
+              )}
+            </div>
+          )}
+
+          {editingResource && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input
+                label="File URL"
+                value={formData.fileUrl}
+                onChange={(e) => setFormData({ ...formData, fileUrl: e.target.value })}
+                placeholder="File URL (read-only for existing resources)"
+                readOnly
+              />
+              <Input
+                label="File Size"
+                value={formData.fileSize}
+                onChange={(e) => setFormData({ ...formData, fileSize: e.target.value })}
+                placeholder="File size (read-only for existing resources)"
+                readOnly
+              />
+            </div>
+          )}
+
           <div className="flex gap-3 pt-4">
             <Button type="button" variant="secondary" onClick={() => setIsModalOpen(false)} fullWidth disabled={isSaving}>
               Cancel

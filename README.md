@@ -6,7 +6,9 @@ A modern cloud-native solution for managing physical and digital library resourc
 
 - **Cloud-Native Architecture** - Built with React, TypeScript, and Supabase
 - **Role-Based Access Control** - Admin, Librarian, and User roles
-- **Digital Resource Management** - Upload and manage digital files
+- **Digital Resource Management** - Upload, preview, and download PDF and document files
+- **Real-time PDF Preview** - View PDFs directly in the browser
+- **File Upload & Storage** - Secure file storage with Supabase Storage
 - **Real-time Availability Tracking** - Live book availability status
 - **Responsive Design** - Modern UI with Tailwind CSS
 
@@ -50,6 +52,13 @@ const supabaseKey = "your-anon-key"
 2. Navigate to SQL Editor
 3. Copy and paste the contents of `schema.sql`
 4. Run the SQL script
+
+### 3.5. Set up Storage for Digital Resources
+
+1. In your Supabase dashboard, go to Storage
+2. Create a new bucket named `digital-resources`
+3. Set the bucket to **Public** (so files can be accessed)
+4. Go to SQL Editor and run `storage-setup.sql` to set up storage policies
 
 ### 4. Initialize Sample Data (Optional)
 
