@@ -374,32 +374,21 @@ export const useStore = create<StoreState>()(
           const { data, error } = await supabase.auth.signUp({
             email,
             password,
+            options: {
+              data: { name },
+            },
           });
 
           if (error) {
             return { success: false, error: error.message };
           }
 
-          if (data.user) {
-            // Create user profile with default role 'user'
-            const { error: profileError } = await supabase
-              .from('user_profiles')
-              .insert({
-                id: data.user.id,
-                name,
-                email: data.user.email!,
-                role: 'user',
-              });
-
-            if (profileError) {
-              console.error('Error creating user profile:', profileError);
-              return { success: false, error: 'Failed to create user profile' };
-            }
-
-            return { success: true };
+          if (!data.user) {
+            return { success: false, error: 'Registration failed: no user returned' };
           }
 
-          return { success: false, error: 'Registration failed' };
+          // A database trigger now creates the user_profiles row automatically
+          return { success: true };
         } catch (error) {
           console.error('Registration error:', error);
           return { success: false, error: 'An unexpected error occurred' };

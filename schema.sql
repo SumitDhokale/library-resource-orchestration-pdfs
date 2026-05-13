@@ -118,6 +118,37 @@ CREATE POLICY "Admins can view all profiles" ON user_profiles
     )
   );
 
+-- Automatically create a user profile when a new auth user is created
+CREATE OR REPLACE FUNCTION public.handle_new_auth_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.user_profiles (id, name, email, role, created_at, updated_at)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'name', NEW.email),
+    NEW.email,
+    'user',
+    TIMEZONE('utc'::text, NOW()),
+    TIMEZONE('utc'::text, NOW())
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER auth_user_created
+AFTER INSERT ON auth.users
+FOR EACH ROW EXECUTE FUNCTION public.handle_new_auth_user();
+
+CREATE POLICY "Admins can update all profiles" ON user_profiles
+  FOR UPDATE USING (
+    EXISTS (
+      SELECT 1 FROM user_profiles
+      WHERE id = auth.uid() AND role = 'admin'
+    )
+  );
+
 CREATE POLICY "Admins can update all profiles" ON user_profiles
   FOR UPDATE USING (
     EXISTS (
